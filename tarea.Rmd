@@ -1,0 +1,189 @@
+---
+title: "Homework Machine Learning"
+author: "Ana Monreal Ibero"
+date: "3 de noviembre de 2016"
+output: html_document
+---
+
+## Preparation of the data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I load all the libraries that I will use:
+
+```{r loadlib, echo=TRUE}
+library(caret)
+library(corrplot) # Nice library to do corrlation plots
+# This is a library that allows you to do PCA analysis.
+# I found it here
+# http://www.sthda.com/english/wiki/principal-component-analysis-how-to-reveal-the-most-important-variables-in-your-data-r-software-and-data-mining
+library("FactoMineR")
+library(factoextra)
+
+```
+
+I read my data
+
+```{r readdata, echo=TRUE}
+
+mydir <- "/Users/ami/Dropbox/Coursera/MachineLearning/Tarea"
+setwd(mydir)
+### Initialize the url and file variables
+myurltraining <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+myurltesting <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+myfiletesting <- "pml-testing.csv"
+myfiletraining <- "pml-training.csv"
+
+# Download the files
+if (!file.exists(myfiletraining)) {
+    download.file(myurltraining, destfile=myfiletraining)
+}
+if (!file.exists(myfiletesting)) {
+    download.file(myurltesting, destfile=myfiletesting)
+}
+
+# Reading the files
+training <- read.csv(myfiletraining, header=TRUE, sep=",",
+                     na.strings = c("NA",""))
+testing <- read.csv(myfiletesting, header=TRUE, sep=",", 
+                    na.strings = c("NA",""))
+
+# First visual
+str(training)
+dim(training) ; dim(testing)
+```
+
+I see and decide:
+* Apparently, many columns many NA, I will quantify that and eliminate those that has mostly NA.
+* The 5 first columns seem not interesting for what we are doing here. I eliminate those.
+* I eliminate those with near zero variance.
+* Finally, because we have that many data, I separate my training data, so I can frabricate models with the *training.train* and test them with the *testing.train* data.
+* My favorite model will then be applied to the *testing* data.
+
+```{r cleandata, echo=TRUE}
+# There are many columns with NA that I will try to eliminate
+
+# Eliminate columns that in the training set are full of NA 
+# those which are factors with 1 level
+na_count <-sapply(training, function(y) sum(length(which(is.na(y))))/length(y))
+quasiempty <- names(na_count[na_count > 0.9])
+training <- training[, na_count < 0.9]
+testing <- testing[, na_count < 0.9]
+
+# We see if there are near zero variance predictors 
+zero.var <- nearZeroVar(training, saveMetrics=TRUE)
+print(names(training)[zero.var$nzv])
+# Only "new_window"
+zero.var.index <- nearZeroVar(training, saveMetrics=FALSE)
+training <- training[, -zero.var.index]
+testing <- testing[, -zero.var.index]
+
+# X seems the index
+# user_name is a string
+# cols 3:5 are dates. We do not consider for the moment
+# But they might be necessary later on, if there is a tendency with time!
+training <- training[, -c(1,2,3,4,5)]
+testing <- testing[, -c(1,2,3,4,5)]
+
+# We keep our testing for the end for validation.
+# We separate our training in training and testing
+set.seed(12345)
+inTrain <- createDataPartition(y=training$classe, p=0.6, list=FALSE)
+training.train <- training[inTrain,]
+testing.train <- training[-inTrain,]
+
+```
+
+There is still plenty of variables. I do a bit of exploration to see if they are correlated.
+
+```{r exploselfcorr, echo=TRUE}
+# We explore the matrix of selfcorrelation
+M <- abs(cor(training.train[,1:53]))
+corrplot(cor(training.train[,1:53]), type="upper", order="hclust", tl.col="black", tl.srt=45)
+diag(M) <-0
+highcorr <- which(M>0.8, arr.ind=T)
+print(length(highcorr))
+
+```
+
+To do show, I do PCA analysis and I take the predictors that contribute the most to the first PCAs. I am not sure if it is the best option...
+
+```{r mypca, echo=TRUE}
+mypca <- PCA(training.train[,1:53], graph = FALSE)
+eigenvalues <- mypca$eig
+fviz_screeplot(mypca, choice=c("variance"), ncp=25,
+               barfill="aquamarine3") 
+fviz_pca_contrib(mypca, choice = "var", axes = 1:5, top =30)
+mysel <- c("roll_belt","accel_belt_z","gyros_dumbbell_x", "gyros_forearm_z",
+           "gyros_dumbbell_z", "total_accel_belt", "accel_arm_y","magnet_arm_y",
+           "yaw_belt", "gyros_forearm_y", "accel_dumbbell_z", "accel_belt_x",
+           "magnet_arm_z", "pitch_belt", "accel_arm_x","magnet_belt_x",
+           "yaw_dumbbell","magnet_forearm_z","magnet_dumbbell_x",
+           "classe")
+```
+
+Finally, I set up some sort of cross validation. I use a K-fold with K=10. Later on, I will run some models with it. However, I also run them without it, and apparently I got similar results. Not sure why.
+
+```{r mykfold, echo=TRUE}
+### 10-fold cross validation
+mytraincontrol <- trainControl(method='cv', number=10)
+```
+
+### Model creation
+
+I run five models. At the end, I put a table with the results in terms of accuracy
+
+```{r modcrea, echo=TRUE}
+# Mod 1: linear discriminant analysis 
+mod1 <- train(classe ~ ., method="lda", data=training.train,
+              trControl=mytraincontrol)
+predtrain1 <- predict(mod1, training.train)
+confusionMatrix(training.train$classe,predtrain1)$overall["Accuracy"]
+predtest1 <- predict(mod1, testing.train)
+confusionMatrix(testing.train$classe,predtest1)$overall["Accuracy"]
+# Accuracy 72%
+
+# Mod 2: Recursive Partitioning and Regression Trees
+mod2 <- train(classe ~ ., data=training[,mysel], method="rpart",
+              trControl=mytraincontrol)
+predtrain2 <- predict(mod2, training.train)
+confusionMatrix(training.train$classe,predtrain2)$overall["Accuracy"]
+predtest2 <- predict(mod2, testing.train)
+confusionMatrix(testing.train$classe,predtest2)$overall["Accuracy"]
+# Accuracy: 54%
+
+# Mod 3: boosting with trees
+mod3<- train(classe ~ ., method='gbm',  data=training[,mysel], verbose=FALSE,
+             trControl=mytraincontrol)
+predtrain3 <- predict(mod3, training.train)
+confusionMatrix(training.train$classe,predtrain3)$overall["Accuracy"]
+predtest3 <- predict(mod3, testing.train)
+confusionMatrix(testing.train$classe,predtest3)$overall["Accuracy"]
+# Accuracy = 93 %
+
+# Mod 4: rf
+mod4<- train(classe ~ ., method='rf',  data=training[,mysel], verbose=FALSE,
+             trControl=mytraincontrol)
+predtrain4 <- predict(mod4, training.train)
+confusionMatrix(training.train$classe,predtrain4)$overall["Accuracy"]
+predtest4 <- predict(mod4, testing.train)
+confusionMatrix(testing.train$classe,predtest4)$overall["Accuracy"]
+# Accuracy = 100% (?)
+```
+
+| Number | Model | Accuracy |
+|:------:|:-----:|:---------| 
+| 1 | Linear Discriminant Analysis | 72%|
+| 2 | Recursive Partitioning and Regression Trees  | 54%  |
+| 3 | Boosting with trees  | 93%  |
+| 4 | Random Forest | 100% |
+
+I find extremely weird that a model gives 100% accuracy for both the training and testing data... Since it is not unlikely that I have done something wrong, because I am learning, I prefer to take model Boosting with trees to predict the outcome of the provided test data. It since it sounds more realistic to me.
+
+```{r mypred, echo=TRUE}
+
+predfinal <- predict(mod3, testing)
+predfinal
+```
